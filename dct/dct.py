@@ -44,7 +44,7 @@ def _zigzag_permutation(k: int, device: str | torch.device = None) -> Tensor:
     return torch.cat([idx.diagonal(i) if (i + k) % 2 == 1 else idx.diagonal(i).flip(0) for i in range(1 - k, k)])
 
 
-# Abstracts
+# Abstract Classes
 
 class _DCT(nn.Module):
 
@@ -84,7 +84,7 @@ class DCT2d(_DCT):
                  device: str | torch.device = None) -> None:
         super().__init__(dct, kernel_size, device)
         k = _expand_kernel(self.kernel, 2).reshape(self.kernel_size ** 2, 1, self.kernel_size, self.kernel_size)
-        k = k[_zigzag_permutation(self.kernel_size, k.device)]
+        k = k[_zigzag_permutation(self.kernel_size, device)]
 
         if selections is not None:
             k = k[:selections]
@@ -93,21 +93,24 @@ class DCT2d(_DCT):
 
     def forward(self, x: Tensor) -> Tensor:
         if not _is_a_batched_tensor(x):
-            raise ValueError(f"{self.__class__.__name__} only supports batched image tensors; "
-                             f"expected a 4D tensor but received a {x.ndim}D tensor")
+            raise RuntimeError(f"{self.__class__.__name__} only supports batched image tensors; "
+                               f"expected a 4D tensor but received a {x.ndim}D tensor")
 
         if not _is_resolution_divisible(x, self.kernel_size):
-            raise ValueError(f"the resolution must be divisible by the kernel size")
+            raise RuntimeError(f"the resolution must be divisible by the kernel size")
 
         b, c, h, w = x.shape
 
         # x = F.conv2d(x, self.kernel.repeat(c, 1, 1, 1), None, self.kernel_size, groups=c)
-        # Equivalent to the grouped convolution above, but faster.
+        # Equivalent to the grouped convolution above, but much faster.
         x = x.reshape(b * c, 1, h, w)
         x = F.conv2d(x, self.kernel, None, self.kernel_size)
         x = x.reshape(b, -1, h // self.kernel_size, w // self.kernel_size)
 
         return x
+
+    def reparameterize(self) -> None:
+        raise NotImplementedError
 
 
 class IDCT2d(_IDCT):
@@ -127,14 +130,14 @@ class IDCT2d(_IDCT):
 
     def forward(self, x: Tensor) -> Tensor:
         if not _is_a_batched_tensor(x):
-            raise ValueError(f"{self.__class__.__name__} only supports batched image tensors; "
-                             f"expected a 4D tensor but received a {x.ndim}D tensor")
+            raise RuntimeError(f"{self.__class__.__name__} only supports batched image tensors; "
+                               f"expected a 4D tensor but received a {x.ndim}D tensor")
 
         b, n, h, w = x.shape
         c = n // self.selections
 
         # x = F.conv_transpose2d(x, self.kernel.repeat(c, 1, 1, 1), None, self.kernel_size, groups=c)
-        # Equivalent to the grouped transposed convolution above, but faster.
+        # Equivalent to the grouped transposed convolution above, but much faster.
         x = x.reshape(b * c, -1, h, w)
         x = F.conv_transpose2d(x, self.kernel, None, self.kernel_size)
         x = x.reshape(b, c, h * self.kernel_size, w * self.kernel_size)
