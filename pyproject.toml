@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dct"
+version = "1.0.0"
+description = "Implementation of Discrete Cosine Transform (DCT) in PyTorch"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+authors = [
+  { name = "Juno", email = "juno.demie.oh@gmail.com" }
+]
+
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Framework :: PyTorch"
+]
+
+# Runtime Dependencies
+dependencies = [
+  "torch>=2.0",
+  "numpy",
+  "scipy"
+]
+
+[project.urls]
+homepage = "https://github.com/akanelite/dct"
+bug-tracker = "https://github.com/akanelite/dct/issues"
