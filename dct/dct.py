@@ -12,6 +12,8 @@ __all__ = ["DCT2d", "IDCT2d"]
 
 Tensor = torch.Tensor
 
+_VALID_NORMS = ("ortho", "backward", "forward")
+
 
 # Checking
 
@@ -25,12 +27,14 @@ def _is_resolution_divisible(x: Tensor, d: int) -> bool:
 
 # Helper Functions
 
-def _initialize_dct_kernel(d: int, k: int, device: str | torch.device = None) -> Tensor:
-    return torch.as_tensor(scipy.fft.dct(np.eye(k), d, orthogonalize=True), dtype=torch.float32, device=device)
+def _initialize_dct_kernel(d: int, k: int, norm: str, device: str | torch.device = None) -> Tensor:
+    return torch.as_tensor(scipy.fft.dct(np.eye(k), d, norm=norm, orthogonalize=True),
+                           dtype=torch.float32, device=device)
 
 
-def _initialize_inverse_dct_kernel(d: int, k: int, device: str | torch.device = None) -> Tensor:
-    return torch.as_tensor(scipy.fft.idct(np.eye(k), d, orthogonalize=True), dtype=torch.float32, device=device)
+def _initialize_inverse_dct_kernel(d: int, k: int, norm: str, device: str | torch.device = None) -> Tensor:
+    return torch.as_tensor(scipy.fft.idct(np.eye(k), d, norm=norm, orthogonalize=True),
+                           dtype=torch.float32, device=device)
 
 
 def _expand_kernel(kernel: Tensor, dims: int) -> Tensor:
@@ -48,32 +52,38 @@ def _zigzag_permutation(k: int, device: str | torch.device = None) -> Tensor:
 
 class _DCT(nn.Module):
 
-    def __init__(self, dct: int, kernel_size: int, device: str | torch.device = None) -> None:
+    def __init__(self, dct: int, kernel_size: int, norm: str, device: str | torch.device = None) -> None:
         super().__init__()
+        if norm not in _VALID_NORMS:
+            raise ValueError(f"norm must be one of {_VALID_NORMS}, got {norm!r}")
         self.dct = dct
         self.kernel_size = kernel_size
-        self.register_buffer("kernel", _initialize_dct_kernel(dct, kernel_size, device).T)
+        self.norm = norm
+        self.register_buffer("kernel", _initialize_dct_kernel(dct, kernel_size, norm, device).T)
 
     def forward(self, x: Tensor) -> Tensor:
         raise NotImplementedError
 
     def extra_repr(self) -> str:
-        return f"dct={self.dct}, kernel_size={self.kernel_size}"
+        return f"dct={self.dct}, kernel_size={self.kernel_size}, norm={self.norm!r}"
 
 
 class _IDCT(nn.Module):
 
-    def __init__(self, dct: int, kernel_size: int, device: str | torch.device = None) -> None:
+    def __init__(self, dct: int, kernel_size: int, norm: str, device: str | torch.device = None) -> None:
         super().__init__()
+        if norm not in _VALID_NORMS:
+            raise ValueError(f"norm must be one of {_VALID_NORMS}, got {norm!r}")
         self.dct = dct
         self.kernel_size = kernel_size
-        self.register_buffer("kernel", _initialize_inverse_dct_kernel(dct, kernel_size, device))
+        self.norm = norm
+        self.register_buffer("kernel", _initialize_inverse_dct_kernel(dct, kernel_size, norm, device))
 
     def forward(self, x: Tensor) -> Tensor:
         raise NotImplementedError
 
     def extra_repr(self) -> str:
-        return f"dct={self.dct}, kernel_size={self.kernel_size}"
+        return f"dct={self.dct}, kernel_size={self.kernel_size}, norm={self.norm!r}"
 
 
 # Modules
@@ -81,8 +91,8 @@ class _IDCT(nn.Module):
 class DCT2d(_DCT):
 
     def __init__(self, dct: int = 2, kernel_size: int = 8, selections: int | None = None,
-                 device: str | torch.device = None) -> None:
-        super().__init__(dct, kernel_size, device)
+                 norm: str = "ortho", device: str | torch.device = None) -> None:
+        super().__init__(dct, kernel_size, norm, device)
         k = _expand_kernel(self.kernel, 2).reshape(self.kernel_size ** 2, 1, self.kernel_size, self.kernel_size)
         k = k[_zigzag_permutation(self.kernel_size, device)]
 
@@ -116,8 +126,8 @@ class DCT2d(_DCT):
 class IDCT2d(_IDCT):
 
     def __init__(self, dct: int = 2, kernel_size: int = 8, selections: int | None = None,
-                 device: str | torch.device = None) -> None:
-        super().__init__(dct, kernel_size, device)
+                 norm: str = "ortho", device: str | torch.device = None) -> None:
+        super().__init__(dct, kernel_size, norm, device)
         k = _expand_kernel(self.kernel, 2).reshape(self.kernel_size ** 2, 1, self.kernel_size, self.kernel_size)
         k = k[_zigzag_permutation(self.kernel_size, k.device)]
 
