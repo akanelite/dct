@@ -62,3 +62,27 @@ def test_single_kernel_buffer_and_repr():
     # selections 속성 노출
     assert DCT2d(kernel_size=8).selections == 64
     assert DCT2d(kernel_size=8, selections=10).selections == 10
+
+
+def test_double_precision_roundtrip():
+    # 커널 buffer는 float32로 초기화되므로 .double()은 dtype만 float64로 올린다
+    # (정밀도는 float32에 묶임). 여기서 검증하는 것은 fp64 dtype 전파와 동작이다.
+    fwd = DCT2d(kernel_size=8, norm="ortho").double()
+    inv = IDCT2d(kernel_size=8, norm="ortho").double()
+    x = torch.randn(1, 3, 16, 16, dtype=torch.float64)
+    out = fwd(x)
+    recon = inv(out)
+    assert out.dtype == torch.float64
+    assert recon.dtype == torch.float64
+    assert (recon - x).abs().max().item() < 1e-5
+
+
+def test_half_precision_input():
+    # 커널 buffer는 float32, 입력은 float16 — forward 캐스팅으로 동작해야 함.
+    devs = [d for d in DEVICES if d != "cpu"]  # CPU는 half conv 미지원
+    if not devs:
+        pytest.skip("no half-capable device")
+    dev = devs[0]
+    fwd = DCT2d(kernel_size=8, norm="ortho").to(dev)
+    out = fwd(torch.randn(1, 3, 16, 16, device=dev, dtype=torch.float16))
+    assert out.dtype == torch.float16
