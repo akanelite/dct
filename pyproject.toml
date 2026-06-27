@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dct"
-version = "1.0.0"
+version = "2.0.0"
 description = "Implementation of Discrete Cosine Transform (DCT) in PyTorch"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -30,6 +30,9 @@ dependencies = [
   "numpy",
   "scipy"
 ]
+
+[project.optional-dependencies]
+dev = ["pytest"]
 
 [project.urls]
 homepage = "https://github.com/akanelite/dct"

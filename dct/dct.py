@@ -95,6 +95,21 @@ class _BlockTransform(nn.Module):
 # Modules
 
 class DCT2d(_BlockTransform):
+    """Block 2D DCT as a strided convolution.
+
+    Args:
+        dct: DCT type passed to scipy (default 2, i.e. DCT-II).
+        kernel_size: block side length; input H and W must be divisible by it.
+        selections: keep only the first N zigzag (low->high freq) coefficients.
+            None keeps all kernel_size**2.
+        norm: scipy normalization, one of "ortho" (default, orthonormal /
+            energy-preserving), "backward", or "forward".
+        device: device for the precomputed kernel buffer.
+
+    Input:  (B, C, H, W) image tensor.
+    Output: (B, C * selections, H // kernel_size, W // kernel_size) coefficients,
+        per block ordered low->high frequency.
+    """
 
     def __init__(self, dct: int = 2, kernel_size: int = 8, selections: int | None = None,
                  norm: str = "ortho", device: str | torch.device = None) -> None:
@@ -121,6 +136,14 @@ class DCT2d(_BlockTransform):
 
 
 class IDCT2d(_BlockTransform):
+    """Inverse of :class:`DCT2d` via transposed convolution.
+
+    Args mirror :class:`DCT2d`; use the same ``norm``, ``kernel_size`` and
+    ``selections`` as the forward transform for exact reconstruction.
+
+    Input:  (B, C * selections, H, W) coefficient tensor.
+    Output: (B, C, H * kernel_size, W * kernel_size) reconstruction.
+    """
 
     def __init__(self, dct: int = 2, kernel_size: int = 8, selections: int | None = None,
                  norm: str = "ortho", device: str | torch.device = None) -> None:

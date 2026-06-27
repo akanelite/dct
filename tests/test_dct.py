@@ -103,3 +103,28 @@ def test_idct_rejects_bad_input():
     # 비가분 채널은 명확한 메시지로 거부해야 한다(난해한 conv 에러가 아니라).
     with pytest.raises(RuntimeError, match="divisible by selections"):
         inv(torch.randn(2, 24, 4, 4))            # 24 % 16 != 0 → 채널 비가분
+
+
+@pytest.mark.parametrize("sel", [64, 32, 16, 8])
+def test_selections_channel_count(sel):
+    fwd = DCT2d(kernel_size=8, selections=sel)
+    out = fwd(torch.randn(2, 3, 32, 32))
+    assert out.shape[1] == 3 * sel
+
+
+def test_selections_monotonic_rmse():
+    x = torch.randn(2, 3, 32, 32)
+    rmses = []
+    for sel in (64, 32, 16, 8):
+        f = DCT2d(kernel_size=8, selections=sel, norm="ortho")
+        i = IDCT2d(kernel_size=8, selections=sel, norm="ortho")
+        rmses.append((i(f(x)) - x).pow(2).mean().sqrt().item())
+    assert rmses[0] < 1e-4                       # 전 계수 → 무손실
+    assert rmses[1] <= rmses[2] <= rmses[3]      # 절단 늘수록 오차 증가
+
+
+def test_gradient_flows_to_input():
+    fwd = DCT2d(kernel_size=8)
+    x = torch.randn(2, 3, 16, 16, requires_grad=True)
+    fwd(x).pow(2).sum().backward()
+    assert x.grad is not None and x.grad.abs().sum().item() > 0
