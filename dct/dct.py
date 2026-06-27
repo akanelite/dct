@@ -133,6 +133,9 @@ class IDCT2d(_BlockTransform):
                                f"expected a 4D tensor but received a {x.ndim}D tensor")
 
         b, n, h, w = x.shape
+        if n % self.selections != 0:
+            raise RuntimeError(f"the channel dimension ({n}) must be divisible by "
+                               f"selections ({self.selections})")
         c = n // self.selections
 
         # x = F.conv_transpose2d(x, self.kernel.repeat(c, 1, 1, 1), None, self.kernel_size, groups=c)

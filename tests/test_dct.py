@@ -86,3 +86,20 @@ def test_half_precision_input():
     fwd = DCT2d(kernel_size=8, norm="ortho").to(dev)
     out = fwd(torch.randn(1, 3, 16, 16, device=dev, dtype=torch.float16))
     assert out.dtype == torch.float16
+
+
+def test_dct_rejects_bad_input():
+    fwd = DCT2d(kernel_size=8)
+    with pytest.raises(RuntimeError):
+        fwd(torch.randn(3, 32, 32))          # 4D 아님
+    with pytest.raises(RuntimeError):
+        fwd(torch.randn(1, 3, 30, 30))       # 해상도 비가분
+
+
+def test_idct_rejects_bad_input():
+    inv = IDCT2d(kernel_size=8, selections=16)   # 채널은 16의 배수여야 함
+    with pytest.raises(RuntimeError, match="4D"):
+        inv(torch.randn(3, 16, 4, 4)[0])         # 3D → 4D 아님
+    # 비가분 채널은 명확한 메시지로 거부해야 한다(난해한 conv 에러가 아니라).
+    with pytest.raises(RuntimeError, match="divisible by selections"):
+        inv(torch.randn(2, 24, 4, 4))            # 24 % 16 != 0 → 채널 비가분
