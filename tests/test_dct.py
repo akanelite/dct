@@ -50,3 +50,15 @@ def test_invalid_norm_raises():
         DCT2d(norm="nope")
     with pytest.raises(ValueError):
         IDCT2d(norm="nope")
+
+
+def test_single_kernel_buffer_and_repr():
+    fwd = DCT2d(kernel_size=8, norm="ortho")
+    # 'kernel' 버퍼가 정확히 하나, 2D 형태(k², 1, k, k)
+    buffers = dict(fwd.named_buffers())
+    assert list(buffers.keys()) == ["kernel"]
+    assert tuple(buffers["kernel"].shape) == (64, 1, 8, 8)
+    assert "norm='ortho'" in repr(fwd)
+    # selections 속성 노출
+    assert DCT2d(kernel_size=8).selections == 64
+    assert DCT2d(kernel_size=8, selections=10).selections == 10
