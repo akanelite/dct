@@ -27,9 +27,9 @@ if os.environ.get("DCT_BUILD_CPU_EXT", "").lower() in ("1", "true", "yes", "on")
     if sys.platform == "win32":
         cflags, ldflags = ["/O2", "/arch:AVX2", "/fp:precise", "/openmp"], []
     elif sys.platform == "darwin":
-        cflags, ldflags = ["-O3", "-mavx2", "-mfma"], []
+        cflags, ldflags = ["-O3", "-mavx2", "-mfma", "-mf16c"], []
     else:
-        cflags, ldflags = ["-O3", "-mavx2", "-mfma", "-fopenmp"], ["-fopenmp"]
+        cflags, ldflags = ["-O3", "-mavx2", "-mfma", "-mf16c", "-fopenmp"], ["-fopenmp"]
 
     ext_modules = [CppExtension("dct._C", ["dct/csrc/dct8_cpu.cpp"],
                                 extra_compile_args=cflags, extra_link_args=ldflags)]

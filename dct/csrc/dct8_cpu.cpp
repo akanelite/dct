@@ -1,4 +1,7 @@
-// 8x8 block DCT-II and its inverse on CPU with AVX2 + FMA, float32.
+// 8x8 block DCT-II and its inverse on CPU with AVX2 + FMA (+ F16C).
+//
+// Computes in float32. Inputs may be float32, float16, bfloat16, uint8, int8, int16 or int32:
+// floating inputs keep their dtype, integer inputs produce float32.
 //
 // SIMD runs across blocks: one __m256 holds the same pixel (or coefficient) of 8 horizontally
 // adjacent blocks. Output coefficient z of those 8 blocks is then contiguous in the
@@ -24,11 +27,12 @@
 #include <ATen/Parallel.h>
 #include <immintrin.h>
 
+#include <cstdint>
 #include <cstring>
 #include <vector>
 
 #if !defined(__AVX2__)
-#error "dct8_cpu.cpp must be compiled with AVX2 and FMA enabled (/arch:AVX2 or -mavx2 -mfma)"
+#error "dct8_cpu.cpp must be compiled with AVX2, FMA and F16C enabled (/arch:AVX2 or -mavx2 -mfma -mf16c)"
 #endif
 
 namespace {
@@ -120,14 +124,81 @@ inline void inv_1d(__m256* p, int st, const Coefs& c) {
     }
 }
 
+// ---- Typed load / store of 8 consecutive elements as 8 float lanes ----
+//
+// The transform always runs in float32; only the memory side depends on the dtype. Integer
+// inputs are read directly (4x less input traffic for uint8 than a separate .float() pass),
+// and float16 / bfloat16 are widened on load and rounded once on store.
+
+struct F32 {
+    using T = float;
+    static __m256 load(const T* p) { return _mm256_loadu_ps(p); }
+    static void store(T* p, __m256 v) { _mm256_storeu_ps(p, v); }
+};
+
+struct F16 {
+    using T = uint16_t;              // IEEE half bits (c10::Half)
+    static __m256 load(const T* p) { return _mm256_cvtph_ps(_mm_loadu_si128(reinterpret_cast<const __m128i*>(p))); }
+    static void store(T* p, __m256 v) {
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(p), _mm256_cvtps_ph(v, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
+    }
+};
+
+struct BF16 {
+    using T = uint16_t;              // upper half of a float32 (c10::BFloat16)
+    static __m256 load(const T* p) {
+        __m256i w = _mm256_cvtepu16_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(p)));
+        return _mm256_castsi256_ps(_mm256_slli_epi32(w, 16));
+    }
+    static void store(T* p, __m256 v) {
+        // Round to nearest even, as c10::BFloat16 does; NaN stays a (quiet) NaN.
+        __m256i b = _mm256_castps_si256(v);
+        __m256i lsb = _mm256_and_si256(_mm256_srli_epi32(b, 16), _mm256_set1_epi32(1));
+        __m256i r = _mm256_srli_epi32(_mm256_add_epi32(_mm256_add_epi32(b, _mm256_set1_epi32(0x7FFF)), lsb), 16);
+        __m256i nan = _mm256_castps_si256(_mm256_cmp_ps(v, v, _CMP_UNORD_Q));
+        r = _mm256_blendv_epi8(r, _mm256_set1_epi32(0x7FC0), nan);
+        __m128i packed = _mm_packus_epi32(_mm256_castsi256_si128(r), _mm256_extracti128_si256(r, 1));
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(p), packed);
+    }
+};
+
+struct U8 {
+    using T = uint8_t;
+    static __m256 load(const T* p) {
+        return _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(_mm_loadl_epi64(reinterpret_cast<const __m128i*>(p))));
+    }
+};
+
+struct I8 {
+    using T = int8_t;
+    static __m256 load(const T* p) {
+        return _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_loadl_epi64(reinterpret_cast<const __m128i*>(p))));
+    }
+};
+
+struct I16 {
+    using T = int16_t;
+    static __m256 load(const T* p) {
+        return _mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(p))));
+    }
+};
+
+struct I32 {
+    using T = int32_t;
+    static __m256 load(const T* p) {
+        return _mm256_cvtepi32_ps(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(p)));
+    }
+};
+
 // ---- 2D on a group of 8 horizontally adjacent blocks ----
 
-// in: top-left of the group, row stride `ld` floats (8 rows x 64 floats are read).
+// in: top-left of the group, row stride `ld` elements (8 rows x 64 elements are read).
 // Y[u * 8 + v]: coefficient (u, v) of the 8 blocks, one per lane.
-inline void fwd_group(const float* in, int64_t ld, __m256 Y[64], const Coefs& c) {
+template <class In>
+inline void fwd_group(const typename In::T* in, int64_t ld, __m256 Y[64], const Coefs& c) {
     for (int r = 0; r < K; ++r) {
         __m256 L[8];
-        for (int j = 0; j < 8; ++j) L[j] = _mm256_loadu_ps(in + r * ld + j * K);
+        for (int j = 0; j < 8; ++j) L[j] = In::load(in + r * ld + j * K);
         transpose8(L);                       // L[col] = pixel (r, col) of blocks 0..7
         for (int col = 0; col < K; ++col) Y[r * K + col] = L[col];
         fwd_1d(Y + r * K, 1, c);             // rows
@@ -135,14 +206,15 @@ inline void fwd_group(const float* in, int64_t ld, __m256 Y[64], const Coefs& c)
     for (int v = 0; v < K; ++v) fwd_1d(Y + v, K, c);   // columns
 }
 
-inline void inv_group(__m256 Y[64], float* out, int64_t ld, const Coefs& c) {
+template <class Out>
+inline void inv_group(__m256 Y[64], typename Out::T* out, int64_t ld, const Coefs& c) {
     for (int v = 0; v < K; ++v) inv_1d(Y + v, K, c);   // columns
     for (int i = 0; i < K; ++i) {
         inv_1d(Y + i * K, 1, c);             // rows
         __m256 L[8];
         for (int j = 0; j < 8; ++j) L[j] = Y[i * K + j];
         transpose8(L);                       // L[b] = row i of block b
-        for (int b = 0; b < 8; ++b) _mm256_storeu_ps(out + i * ld + b * K, L[b]);
+        for (int b = 0; b < 8; ++b) Out::store(out + i * ld + b * K, L[b]);
     }
 }
 
@@ -154,105 +226,117 @@ std::vector<int64_t> channel_offsets(const int64_t* sels, int64_t C, int64_t& N)
     return off;
 }
 
-torch::Tensor forward_impl(torch::Tensor x, const torch::Tensor& mat, const torch::Tensor& perm,
-                           const torch::Tensor& sels) {
-    x = x.contiguous();
+template <class In, class Out>
+void forward_impl(const torch::Tensor& x, torch::Tensor& out, const Coefs& c, const int64_t* zz,
+                  const int64_t* ns, const std::vector<int64_t>& off, int64_t N) {
+    using TI = typename In::T;
+    using TO = typename Out::T;
     const int64_t B = x.size(0), C = x.size(1), H = x.size(2), W = x.size(3);
     const int64_t hb = H / K, wb = W / K, P = B * C;
-    const int64_t* ns = sels.data_ptr<int64_t>();
-    int64_t N;
-    const auto off = channel_offsets(ns, C, N);
-    auto out = torch::empty({B, N, hb, wb}, x.options());
-    const float* src = x.data_ptr<float>();
-    float* dst = out.data_ptr<float>();
-    const auto mat_c = mat.contiguous();
-    const Coefs c(mat_c.data_ptr<float>());
-    const int64_t* zz = perm.data_ptr<int64_t>();
+    const TI* src = static_cast<const TI*>(x.data_ptr());
+    TO* dst = static_cast<TO*>(out.data_ptr());
     const int64_t plane_out = hb * wb;
 
     // One task = one row of blocks (8 image rows) of one plane.
     at::parallel_for(0, P * hb, 1, [&](int64_t begin, int64_t end) {
         alignas(32) __m256 Y[64];
-        alignas(32) float tin[K * 64];
-        alignas(32) float tout[8];
+        alignas(32) TI tin[K * 64];
+        alignas(32) TO tout[8];
         for (int64_t t = begin; t < end; ++t) {
             const int64_t pl = t / hb, p = t % hb;
             const int64_t sel = ns[pl % C];
-            const float* row = src + (pl * H + p * K) * W;
-            float* obase = dst + ((pl / C) * N + off[pl % C]) * plane_out + p * wb;
+            const TI* row = src + (pl * H + p * K) * W;
+            TO* obase = dst + ((pl / C) * N + off[pl % C]) * plane_out + p * wb;
             int64_t q = 0;
             for (; q + 8 <= wb; q += 8) {
-                fwd_group(row + q * K, W, Y, c);
-                for (int64_t z = 0; z < sel; ++z)
-                    _mm256_storeu_ps(obase + z * plane_out + q, Y[zz[z]]);
+                fwd_group<In>(row + q * K, W, Y, c);
+                for (int64_t z = 0; z < sel; ++z) Out::store(obase + z * plane_out + q, Y[zz[z]]);
             }
             if (q < wb) {                    // tail: < 8 blocks, go through a zero-padded buffer
                 const int64_t n = wb - q;
                 std::memset(tin, 0, sizeof(tin));
                 for (int r = 0; r < K; ++r)
-                    std::memcpy(tin + r * 64, row + r * W + q * K, n * K * sizeof(float));
-                fwd_group(tin, 64, Y, c);
+                    std::memcpy(tin + r * 64, row + r * W + q * K, n * K * sizeof(TI));
+                fwd_group<In>(tin, 64, Y, c);
                 for (int64_t z = 0; z < sel; ++z) {
-                    _mm256_store_ps(tout, Y[zz[z]]);
-                    std::memcpy(obase + z * plane_out + q, tout, n * sizeof(float));
+                    Out::store(tout, Y[zz[z]]);
+                    std::memcpy(obase + z * plane_out + q, tout, n * sizeof(TO));
                 }
             }
         }
     });
-    return out;
 }
 
-torch::Tensor inverse_impl(torch::Tensor y, const torch::Tensor& mat, const torch::Tensor& perm,
-                           const torch::Tensor& sels) {
-    y = y.contiguous();
+template <class In, class Out>
+void inverse_impl(const torch::Tensor& y, torch::Tensor& out, const Coefs& c, const int64_t* zz,
+                  const int64_t* ns, const std::vector<int64_t>& off) {
+    using TI = typename In::T;
+    using TO = typename Out::T;
     const int64_t B = y.size(0), N = y.size(1), hb = y.size(2), wb = y.size(3);
-    const int64_t C = sels.numel(), H = hb * K, W = wb * K, P = B * C;
-    const int64_t* ns = sels.data_ptr<int64_t>();
-    int64_t total;
-    const auto off = channel_offsets(ns, C, total);
-    auto out = torch::empty({B, C, H, W}, y.options());
-    const float* src = y.data_ptr<float>();
-    float* dst = out.data_ptr<float>();
-    const auto mat_c = mat.contiguous();
-    const Coefs c(mat_c.data_ptr<float>());
-    const int64_t* zz = perm.data_ptr<int64_t>();
+    const int64_t C = out.size(1), H = hb * K, W = wb * K, P = B * C;
+    const TI* src = static_cast<const TI*>(y.data_ptr());
+    TO* dst = static_cast<TO*>(out.data_ptr());
     const int64_t plane_in = hb * wb;
 
     at::parallel_for(0, P * hb, 1, [&](int64_t begin, int64_t end) {
         alignas(32) __m256 Y[64];
-        alignas(32) float tout[K * 64];
-        alignas(32) float tin[8];
+        alignas(32) TO tout[K * 64];
+        alignas(32) TI tin[8];
         for (int64_t t = begin; t < end; ++t) {
             const int64_t pl = t / hb, p = t % hb;
             const int64_t sel = ns[pl % C];
-            const float* ibase = src + ((pl / C) * N + off[pl % C]) * plane_in + p * wb;
-            float* row = dst + (pl * H + p * K) * W;
+            const TI* ibase = src + ((pl / C) * N + off[pl % C]) * plane_in + p * wb;
+            TO* row = dst + (pl * H + p * K) * W;
             int64_t q = 0;
             for (; q + 8 <= wb; q += 8) {
                 for (int z = 0; z < 64; ++z) Y[z] = _mm256_setzero_ps();
-                for (int64_t z = 0; z < sel; ++z) Y[zz[z]] = _mm256_loadu_ps(ibase + z * plane_in + q);
-                inv_group(Y, row + q * K, W, c);
+                for (int64_t z = 0; z < sel; ++z) Y[zz[z]] = In::load(ibase + z * plane_in + q);
+                inv_group<Out>(Y, row + q * K, W, c);
             }
             if (q < wb) {
                 const int64_t n = wb - q;
                 for (int z = 0; z < 64; ++z) Y[z] = _mm256_setzero_ps();
                 for (int64_t z = 0; z < sel; ++z) {
                     std::memset(tin, 0, sizeof(tin));
-                    std::memcpy(tin, ibase + z * plane_in + q, n * sizeof(float));
-                    Y[zz[z]] = _mm256_load_ps(tin);
+                    std::memcpy(tin, ibase + z * plane_in + q, n * sizeof(TI));
+                    Y[zz[z]] = In::load(tin);
                 }
-                inv_group(Y, tout, 64, c);
+                inv_group<Out>(Y, tout, 64, c);
                 for (int r = 0; r < K; ++r)
-                    std::memcpy(row + r * W + q * K, tout + r * 64, n * K * sizeof(float));
+                    std::memcpy(row + r * W + q * K, tout + r * 64, n * K * sizeof(TO));
             }
         }
     });
-    return out;
+}
+
+// Output dtype: floating inputs keep theirs, integer inputs produce float32 (as in dct.functional).
+torch::ScalarType out_dtype(torch::ScalarType t) {
+    return (t == torch::kHalf || t == torch::kBFloat16) ? t : torch::kFloat32;
+}
+
+// Calls f(In{}, Out{}) for the input dtype.
+template <class F>
+void dispatch(torch::ScalarType t, F&& f) {
+    switch (t) {
+        case torch::kFloat32:  return f(F32{}, F32{});
+        case torch::kHalf:     return f(F16{}, F16{});
+        case torch::kBFloat16: return f(BF16{}, BF16{});
+        case torch::kByte:     return f(U8{}, F32{});
+        case torch::kChar:     return f(I8{}, F32{});
+        case torch::kShort:    return f(I16{}, F32{});
+        case torch::kInt:      return f(I32{}, F32{});
+        default: TORCH_CHECK(false, "unsupported dtype ", t);
+    }
+}
+
+bool supported_dtype(torch::ScalarType s) {
+    return s == torch::kFloat32 || s == torch::kHalf || s == torch::kBFloat16 || s == torch::kByte ||
+           s == torch::kChar || s == torch::kShort || s == torch::kInt;
 }
 
 void check(const torch::Tensor& t, const torch::Tensor& mat, const torch::Tensor& perm, const torch::Tensor& sels) {
-    TORCH_CHECK(t.device().is_cpu() && t.scalar_type() == torch::kFloat32 && t.dim() == 4,
-                "expected a 4D float32 CPU tensor");
+    TORCH_CHECK(t.device().is_cpu() && t.dim() == 4 && supported_dtype(t.scalar_type()),
+                "expected a 4D CPU tensor of dtype float32, float16, bfloat16, uint8, int8, int16 or int32");
     TORCH_CHECK(mat.device().is_cpu() && mat.scalar_type() == torch::kFloat32 && mat.numel() == 64,
                 "mat must be an 8x8 float32 CPU tensor");
     TORCH_CHECK(perm.device().is_cpu() && perm.scalar_type() == torch::kInt64 && perm.numel() == 64
@@ -270,14 +354,36 @@ torch::Tensor dct8_forward(torch::Tensor x, torch::Tensor mat, torch::Tensor per
     check(x, mat, perm, sels);
     TORCH_CHECK(x.size(2) % K == 0 && x.size(3) % K == 0, "H and W must be divisible by 8");
     TORCH_CHECK(sels.numel() == x.size(1), "sels must have one entry per input channel");
-    return forward_impl(x, mat, perm, sels);
+    x = x.contiguous();
+    int64_t N;
+    const auto off = channel_offsets(sels.data_ptr<int64_t>(), x.size(1), N);
+    auto out = torch::empty({x.size(0), N, x.size(2) / K, x.size(3) / K},
+                            x.options().dtype(out_dtype(x.scalar_type())));
+    const auto mat_c = mat.contiguous();
+    const Coefs c(mat_c.data_ptr<float>());
+    dispatch(x.scalar_type(), [&](auto in, auto o) {
+        forward_impl<decltype(in), decltype(o)>(x, out, c, perm.data_ptr<int64_t>(),
+                                                sels.data_ptr<int64_t>(), off, N);
+    });
+    return out;
 }
 
 torch::Tensor dct8_inverse(torch::Tensor y, torch::Tensor mat, torch::Tensor perm, torch::Tensor sels) {
     check(y, mat, perm, sels);
     TORCH_CHECK(sels.numel() >= 1, "sels must not be empty");
-    TORCH_CHECK(y.size(1) == sels.sum().item<int64_t>(), "channels must equal sum(sels)");
-    return inverse_impl(y, mat, perm, sels);
+    int64_t total;
+    const auto off = channel_offsets(sels.data_ptr<int64_t>(), sels.numel(), total);
+    TORCH_CHECK(y.size(1) == total, "channels must equal sum(sels)");
+    y = y.contiguous();
+    auto out = torch::empty({y.size(0), sels.numel(), y.size(2) * K, y.size(3) * K},
+                            y.options().dtype(out_dtype(y.scalar_type())));
+    const auto mat_c = mat.contiguous();
+    const Coefs c(mat_c.data_ptr<float>());
+    dispatch(y.scalar_type(), [&](auto in, auto o) {
+        inverse_impl<decltype(in), decltype(o)>(y, out, c, perm.data_ptr<int64_t>(),
+                                                sels.data_ptr<int64_t>(), off);
+    });
+    return out;
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {

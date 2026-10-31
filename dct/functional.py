@@ -220,12 +220,14 @@ def _dct2d(x: Tensor, kernel: Tensor, kernel_size: int, name: str,
         raise RuntimeError(f"{name}: the input has {x.size(1)} channels but selections has "
                            f"{len(per_channel)} entries (one per channel)")
 
-    x = _as_floating(x, name)
+    if x.dtype not in _cpu.DTYPES:
+        x = _as_floating(x, name)       # bool/complex raise here; int64 becomes float32
     if _cpu.supports(x, dct, kernel_size):
         # The kernel writes each channel's selections in place: no index_select pass.
         m, _, perm = _cpu_matrices(norm)
         sels = per_channel or (kernel.size(0),) * x.size(1)
         return _cpu.dct2d(x, m, perm, _cpu_selections(sels))
+    x = _as_floating(x, name)
 
     b, c, h, w = x.shape
 
@@ -254,12 +256,14 @@ def _idct2d(x: Tensor, kernel: Tensor, kernel_size: int, selections: int, name: 
     if per_channel is None and n % selections != 0:
         raise RuntimeError(f"the channel dimension ({n}) must be divisible by "
                            f"selections ({selections})")
-    x = _as_floating(x, name)
+    if x.dtype not in _cpu.DTYPES:
+        x = _as_floating(x, name)       # bool/complex raise here; int64 becomes float32
     if _cpu.supports(x, dct, kernel_size):
         # The kernel reads each channel's selections in place: no zero-filled scatter pass.
         _, a, perm = _cpu_matrices(norm)
         sels = per_channel or (selections,) * (n // selections)
         return _cpu.idct2d(x, a, perm, _cpu_selections(sels))
+    x = _as_floating(x, name)
 
     if per_channel is not None:
         if index is not None:

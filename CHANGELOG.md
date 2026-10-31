@@ -8,10 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Optional AVX2 + FMA CPU kernel for the 8x8 DCT-II on `float32` (and integer) inputs, with full
-  autograd and `torch.func` (`vmap`, `jvp`, ...) support. Built with `DCT_BUILD_CPU_EXT=1 pip install --no-build-isolation .` or
-  compiled on first use with `DCT_CPU_JIT=1`; disabled with `DCT_DISABLE_CPU_EXT=1`. Without
-  it, or for other cases, the pure-PyTorch implementation is used.
+- Optional AVX2 + FMA CPU kernel for the 8x8 DCT-II. It computes in `float32`, reads
+  `float32`, `float16`, `bfloat16`, `uint8`, `int8`, `int16` and `int32` directly, and handles
+  per-channel `selections` in place. Supports autograd and `torch.func` (`vmap`, `jvp`, ...).
+- Build it with `DCT_BUILD_CPU_EXT=1 pip install --no-build-isolation .`, or compile it on first
+  use with `DCT_CPU_JIT=1`; disable it with `DCT_DISABLE_CPU_EXT=1`. Without it, or for other
+  cases, the pure-PyTorch implementation is used.
 
 ## [1.0.0] - 2026-10-31
 

@@ -76,7 +76,6 @@ def test_not_used_outside_its_case(calls):
     dct2d(x, dct=3)
     dct2d(x, kernel_size=4)
     dct2d(x.double())
-    dct2d(x.half())
     _cpu.enabled = False
     try:
         dct2d(x)
@@ -209,3 +208,68 @@ def test_per_sample_gradients_and_jacobians():
     assert (jac.reshape(64, 64) - torch.eye(64)).abs().max().item() < 1e-5
     hess = torch.func.hessian(lambda v: dct2d(v).pow(2).sum())(x)
     assert (hess.reshape(64, 64) - 2 * torch.eye(64)).abs().max().item() < 1e-5   # orthonormal
+
+
+# ---- dtypes read and written by the kernel directly ----
+
+HALF = [torch.float16, torch.bfloat16]
+INTS = [torch.uint8, torch.int8, torch.int16, torch.int32]
+
+
+@pytest.mark.parametrize("dtype", HALF)
+@pytest.mark.parametrize("sel", [None, [32, 8, 1]])
+@pytest.mark.parametrize("shape", [(2, 3, 16, 72), (1, 3, 8, 24)])
+def test_half_dtypes_round_once(dtype, sel, shape, calls):
+    # Computed in float32 and rounded once on store, so the result equals the float32 kernel
+    # rounded to the dtype bit for bit (this also checks round-to-nearest-even for bfloat16).
+    x = torch.randn(*shape).to(dtype)
+    y = dct2d(x, selections=sel)
+    assert y.dtype == dtype
+    assert torch.equal(y, dct2d(x.float(), selections=sel).to(dtype))
+    r = idct2d(y, selections=sel)
+    assert r.dtype == dtype
+    assert torch.equal(r, idct2d(y.float(), selections=sel).to(dtype))
+    assert calls == {"forward": 2, "inverse": 2}
+
+
+@pytest.mark.parametrize("dtype", HALF)
+def test_half_dtypes_accuracy_and_nan(dtype):
+    x = torch.randn(1, 3, 16, 24).to(dtype)
+    tol = 2.0 ** (-10 if dtype == torch.float16 else -7)
+    assert rel_err(dct2d(x), reference(dct2d, x.double())) < tol
+    x[0, 0, 0, 0] = float("nan")                  # only the first block becomes NaN
+    y = dct2d(x)
+    assert y[0, :64, 0, 0].isnan().all() and not y[0, :64, 0, 1:].isnan().any()
+    assert not y[0, 64:].isnan().any()
+
+
+@pytest.mark.parametrize("dtype", HALF)
+def test_half_dtypes_gradients(dtype):
+    x = torch.randn(1, 2, 16, 16).to(dtype).requires_grad_()
+    y = dct2d(x, selections=10)
+    gy = torch.randn_like(y)
+    (gx,) = torch.autograd.grad(y, x, gy)
+    assert gx.dtype == dtype
+    assert torch.equal(gx, idct2d(gy.float(), selections=10, norm="ortho").to(dtype))   # ortho: adjoint = inverse
+
+
+@pytest.mark.parametrize("dtype", INTS)
+@pytest.mark.parametrize("sel", [None, 16, [32, 8, 1]])
+def test_integer_dtypes_read_directly(dtype, sel, calls):
+    info = torch.iinfo(dtype)
+    lo, hi = max(info.min, -1000), min(info.max, 1000)
+    x = torch.randint(lo, hi + 1, (2, 3, 16, 72), dtype=dtype)    # a full group of 8 blocks + a tail
+    y = dct2d(x, selections=sel)
+    assert y.dtype == torch.float32
+    assert torch.equal(y, dct2d(x.float(), selections=sel))
+    c = torch.randint(lo, hi + 1, tuple(y.shape), dtype=dtype)    # e.g. quantized coefficients
+    r = idct2d(c, selections=sel)
+    assert r.dtype == torch.float32
+    assert torch.equal(r, idct2d(c.float(), selections=sel))
+    assert calls == {"forward": 2, "inverse": 2}                   # no conversion pass + fallback
+
+
+def test_int64_is_converted_then_uses_kernel(calls):
+    x = torch.randint(0, 256, (1, 3, 16, 16), dtype=torch.int64)
+    assert torch.equal(dct2d(x), dct2d(x.float()))
+    assert calls["forward"] == 2
