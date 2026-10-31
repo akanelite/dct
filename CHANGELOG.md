@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Optional AVX2 + FMA CPU kernel for the 8x8 DCT-II on `float32` (and integer) inputs, with full
+  autograd and `torch.func` (`vmap`, `jvp`, ...) support. Built with `DCT_BUILD_CPU_EXT=1 pip install --no-build-isolation .` or
+  compiled on first use with `DCT_CPU_JIT=1`; disabled with `DCT_DISABLE_CPU_EXT=1`. Without
+  it, or for other cases, the pure-PyTorch implementation is used.
+
 ## [1.0.0] - 2026-10-31
 
 Initial release.
@@ -16,4 +25,5 @@ Initial release.
 - Floating-point and integer (e.g. `uint8`) inputs; full `float32` precision on CUDA regardless of TF32.
 - PyTorch is the only runtime dependency.
 
+[Unreleased]: https://github.com/akanelite/dct/compare/dec3fd7...main
 [1.0.0]: https://github.com/akanelite/dct/commits/main

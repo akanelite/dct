@@ -13,6 +13,8 @@ from collections.abc import Sequence
 import torch
 import torch.nn.functional as F
 
+from . import _cpu
+
 
 __all__ = ["dct2d", "idct2d"]
 
@@ -173,6 +175,22 @@ def _cached_channel_index(per_channel: tuple[int, ...], max_sel: int, device: to
         return _channel_index(per_channel, max_sel, device)
 
 
+@functools.lru_cache(maxsize=8)
+def _cpu_matrices(norm: str) -> tuple[Tensor, Tensor, Tensor]:
+    # (forward 1D matrix M, inverse 1D matrix (M^-1)^T, zigzag order) for the 8x8 DCT-II CPU kernel.
+    with torch.inference_mode(False):
+        return (_initialize_dct_kernel(2, 8, norm).T.contiguous(),
+                _initialize_inverse_dct_kernel(2, 8, norm).contiguous(),
+                _zigzag_permutation(8))
+
+
+@functools.lru_cache(maxsize=128)
+def _cpu_selections(sels: tuple[int, ...]) -> Tensor:
+    # Per-channel coefficient counts for the CPU kernel (all equal for a uniform selection).
+    with torch.inference_mode(False):
+        return torch.tensor(sels, dtype=torch.int64)
+
+
 def _weight(kernel: Tensor, x: Tensor) -> Tensor:
     return kernel if kernel.dtype == x.dtype else kernel.to(x.dtype)
 
@@ -192,7 +210,9 @@ def _no_cudnn_tf32(x: Tensor):
 # Implementations (shared by the functional API and the modules)
 
 def _dct2d(x: Tensor, kernel: Tensor, kernel_size: int, name: str,
-           per_channel: tuple[int, ...] | None = None, index: Tensor | None = None) -> Tensor:
+           per_channel: tuple[int, ...] | None = None, index: Tensor | None = None,
+           dct: int | None = None, norm: str | None = None) -> Tensor:
+    # dct/norm describe the kernel; when given, the AVX2 CPU kernel may be used (see dct._cpu).
     _check_batched(x, name, "image")
     if x.size(2) % kernel_size != 0 or x.size(3) % kernel_size != 0:
         raise RuntimeError("the resolution must be divisible by the kernel size")
@@ -201,6 +221,12 @@ def _dct2d(x: Tensor, kernel: Tensor, kernel_size: int, name: str,
                            f"{len(per_channel)} entries (one per channel)")
 
     x = _as_floating(x, name)
+    if _cpu.supports(x, dct, kernel_size):
+        # The kernel writes each channel's selections in place: no index_select pass.
+        m, _, perm = _cpu_matrices(norm)
+        sels = per_channel or (kernel.size(0),) * x.size(1)
+        return _cpu.dct2d(x, m, perm, _cpu_selections(sels))
+
     b, c, h, w = x.shape
 
     # x = F.conv2d(x, kernel.repeat(c, 1, 1, 1), None, kernel_size, groups=c)
@@ -217,24 +243,30 @@ def _dct2d(x: Tensor, kernel: Tensor, kernel_size: int, name: str,
 
 
 def _idct2d(x: Tensor, kernel: Tensor, kernel_size: int, selections: int, name: str,
-            per_channel: tuple[int, ...] | None = None, index: Tensor | None = None) -> Tensor:
-    # selections is max(selections) when per_channel is given.
+            per_channel: tuple[int, ...] | None = None, index: Tensor | None = None,
+            dct: int | None = None, norm: str | None = None) -> Tensor:
+    # selections is max(selections) when per_channel is given; dct/norm as in _dct2d.
     _check_batched(x, name, "coefficient")
     b, n, h, w = x.shape
+    if per_channel is not None and n != sum(per_channel):
+        raise RuntimeError(f"{name}: the channel dimension ({n}) must equal "
+                           f"sum(selections) ({sum(per_channel)}) for selections={list(per_channel)}")
+    if per_channel is None and n % selections != 0:
+        raise RuntimeError(f"the channel dimension ({n}) must be divisible by "
+                           f"selections ({selections})")
+    x = _as_floating(x, name)
+    if _cpu.supports(x, dct, kernel_size):
+        # The kernel reads each channel's selections in place: no zero-filled scatter pass.
+        _, a, perm = _cpu_matrices(norm)
+        sels = per_channel or (selections,) * (n // selections)
+        return _cpu.idct2d(x, a, perm, _cpu_selections(sels))
+
     if per_channel is not None:
-        if n != sum(per_channel):
-            raise RuntimeError(f"{name}: the channel dimension ({n}) must equal "
-                               f"sum(selections) ({sum(per_channel)}) for selections={list(per_channel)}")
-        x = _as_floating(x, name)
         if index is not None:
             # Scatter back into the (C * max_sel) layout; dropped coefficients are zero.
             x = x.new_zeros(b, len(per_channel) * selections, h, w).index_copy(1, index, x)
         n = x.size(1)
-    elif n % selections != 0:
-        raise RuntimeError(f"the channel dimension ({n}) must be divisible by "
-                           f"selections ({selections})")
     c = n // selections
-    x = _as_floating(x, name)
 
     # Equivalent to F.conv_transpose2d(x, kernel, None, k) on (B * C, selections, H, W), but
     # conv_transpose2d is several times slower on CPU and for float16 on CUDA. Each block's
@@ -274,7 +306,7 @@ def dct2d(input: Tensor, dct: int = 2, kernel_size: int = 8, selections: Selecti
     sel, per_channel = _validate_args(dct, kernel_size, selections, norm)
     kernel = _cached_kernel(False, dct, kernel_size, sel, norm, input.device)
     index = None if per_channel is None else _cached_channel_index(per_channel, sel, input.device)
-    return _dct2d(input, kernel, kernel_size, "dct2d", per_channel, index)
+    return _dct2d(input, kernel, kernel_size, "dct2d", per_channel, index, dct, norm)
 
 
 def idct2d(input: Tensor, dct: int = 2, kernel_size: int = 8, selections: Selections = None,
@@ -297,4 +329,4 @@ def idct2d(input: Tensor, dct: int = 2, kernel_size: int = 8, selections: Select
     sel, per_channel = _validate_args(dct, kernel_size, selections, norm)
     kernel = _cached_kernel(True, dct, kernel_size, sel, norm, input.device)
     index = None if per_channel is None else _cached_channel_index(per_channel, sel, input.device)
-    return _idct2d(input, kernel, kernel_size, sel, "idct2d", per_channel, index)
+    return _idct2d(input, kernel, kernel_size, sel, "idct2d", per_channel, index, dct, norm)

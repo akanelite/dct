@@ -36,3 +36,10 @@ dev = ["pytest", "numpy", "scipy"]
 [project.urls]
 homepage = "https://github.com/akanelite/dct"
 bug-tracker = "https://github.com/akanelite/dct/issues"
+
+[tool.setuptools.packages.find]
+include = ["dct*"]
+
+[tool.setuptools.package-data]
+# Shipped so that DCT_CPU_JIT=1 can compile the CPU kernel from an installed package.
+dct = ["csrc/*.cpp"]

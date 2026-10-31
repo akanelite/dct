@@ -64,7 +64,7 @@ class DCT2d(_BlockTransform):
 
     def forward(self, x: Tensor) -> Tensor:
         return _dct2d(x, self.kernel, self.kernel_size, self.__class__.__name__,
-                      self._per_channel, self.index)
+                      self._per_channel, self.index, self.dct, self.norm)
 
 
 class IDCT2d(_BlockTransform):
@@ -87,4 +87,4 @@ class IDCT2d(_BlockTransform):
 
     def forward(self, x: Tensor) -> Tensor:
         return _idct2d(x, self.kernel, self.kernel_size, self._max_selections,
-                       self.__class__.__name__, self._per_channel, self.index)
+                       self.__class__.__name__, self._per_channel, self.index, self.dct, self.norm)
