@@ -203,6 +203,33 @@ default for those two norms (`orthogonalize=False`) in how the first/last coeffi
 Both modules are fully differentiable, so gradients flow back to the input and they can
 be dropped into any model as a fixed (non-learnable) transform layer.
 
+### ONNX export and INT8 quantization
+
+`DCT2d`/`IDCT2d` have no trainable parameters, so in a quantized model they are fixed
+preprocessing. Under `torch.onnx.export` (both exporters), `torch.export`, `torch.compile` and
+`torch.jit.trace` the PyTorch implementation is always used (the CPU kernel steps aside), so
+the graph contains only standard ops: `Conv` for the forward transform, `MatMul` +
+`DepthToSpace` for the inverse, and `Gather`/`Scatter` for per-channel `selections`. In ONNX the
+forward transform is the node named after the module, e.g. `/dct/Conv`.
+
+Quantized `torch.ao` tensors (e.g. after a `QuantStub`) are dequantized and transformed as
+float, returning `float32`.
+
+When the model downstream is quantized, keep in mind that DCT coefficients have very different
+ranges: the DC term is up to `8 * 255` for `uint8` images while most AC terms are tens. A single
+per-tensor int8 scale, which ONNX Runtime and TensorRT use for activations by default, rounds
+most AC coefficients to zero. On natural-image-like data (all 64 coefficients):
+
+| int8 quantization of the DCT output | AC SNR | AC coefficients zeroed |
+| --- | --- | --- |
+| per-tensor | 13 dB | 83% |
+| per-tensor, after centering (`x - 128`) | 18 dB | 55% |
+| one scale per coefficient channel | 40 dB | 1% |
+
+So either quantize the coefficients per channel, or rescale each coefficient channel to a
+similar range before the first quantized layer, and keep the DCT node itself in float (for
+ONNX Runtime: `quantize_static(..., nodes_to_exclude=["/dct/Conv"])`).
+
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md).
