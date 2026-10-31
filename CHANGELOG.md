@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-31
+
 ### Added
 
 - Optional AVX2 + FMA CPU kernel for the 8x8 DCT-II. It computes in `float32`, reads
@@ -34,5 +36,6 @@ Initial release.
 - Floating-point and integer (e.g. `uint8`) inputs; full `float32` precision on CUDA regardless of TF32.
 - PyTorch is the only runtime dependency.
 
-[Unreleased]: https://github.com/akanelite/dct/compare/dec3fd7...main
+[Unreleased]: https://github.com/akanelite/dct/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/akanelite/dct/compare/dec3fd7...v1.1.0
 [1.0.0]: https://github.com/akanelite/dct/commits/main
