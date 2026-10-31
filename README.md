@@ -2,7 +2,7 @@
 
 This library implements the [Discrete Cosine Transform](https://www.cse.iitd.ac.in/~pkalra/col783-2017/DCT-Paper.pdf) for PyTorch,
 performing fast block-wise 2D DCT on both CPU and GPU with nothing but PyTorch's own optimized operators.
-For the JPEG case (8x8 DCT-II, `float32`) an optional hand-written AVX2 CPU kernel is also available
+For the JPEG case (8x8 DCT-II) on CPU an optional hand-written AVX2 CPU kernel is also available
 ([see below](#optional-avx2-cpu-kernel)).
 
 While 2D DCT is typically implemented as two successive 1D DCTs, it is hard to achieve high performance without low-level optimizations or hardware acceleration.
@@ -100,13 +100,24 @@ convolution call only, and `IDCT2d` uses a matmul, which only uses TF32 if you o
 
 ### Optional AVX2 CPU kernel
 
-For `float32` (or integer) CPU tensors with `dct=2` and `kernel_size=8`, a hand-written AVX2 + FMA
-kernel replaces the PyTorch path when it is available. It processes 8 neighbouring blocks per SIMD
-vector with a butterfly 1D DCT and runs close to memory bandwidth: on an 8-thread AVX-512 machine,
-about 3x faster for the forward transform and 4–6x for the inverse at full `selections`. Every
-`norm`, `selections` (including per-channel lists), autograd (backward, double backward) and
-`torch.func` transforms (`vmap`, `grad`, `jvp`, `jacrev`, `hessian`) are supported. Other cases always use the PyTorch implementation, and results
-agree to `float32` rounding.
+For CPU tensors with `dct=2` and `kernel_size=8`, a hand-written AVX2 + FMA kernel replaces the
+PyTorch path when it is available. It processes 8 neighbouring blocks per SIMD vector with a
+butterfly 1D DCT and always computes in `float32`. It reads `float32`, `float16`, `bfloat16`,
+`uint8`, `int8`, `int16` and `int32` tensors directly, with no separate conversion pass;
+floating inputs keep their dtype on output and integer inputs produce `float32`, as before. On an 8-thread AVX-512 machine with `(8, 3, 1024, 1024)` inputs:
+
+| input | forward | inverse |
+| --- | --- | --- |
+| `float32` | 2.9x faster | 4.0x faster |
+| `uint8` image / `int16` coefficients | 5.8x | 5.9x |
+| `bfloat16` | 3.2x | 5.5x |
+| `float16` | ~190x (PyTorch's CPU half convolution is very slow) | ~300x |
+
+`float16`/`bfloat16` results are rounded once from the `float32` computation, so they are also
+more accurate than computing in half precision. Every `norm`, `selections` (including per-channel
+lists), autograd (backward, double backward) and `torch.func` transforms (`vmap`, `grad`, `jvp`,
+`jacrev`, `hessian`) are supported. Other cases always use the PyTorch implementation, and
+`float32` results agree with it to rounding.
 
 The package stays pure Python by default. To build the kernel (a C++ compiler is needed — MSVC on
 Windows, GCC/Clang elsewhere), install with your torch already present:

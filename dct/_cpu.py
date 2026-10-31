@@ -1,7 +1,8 @@
 """Optional AVX2 CPU kernel for the 8x8 DCT-II (the JPEG case), with a pure-PyTorch fallback.
 
-The kernel (``dct/csrc/dct8_cpu.cpp``) is used for float32 CPU tensors with ``dct=2`` and
-``kernel_size=8`` when all of these hold:
+The kernel (``dct/csrc/dct8_cpu.cpp``) is used for CPU tensors with ``dct=2`` and
+``kernel_size=8`` (float32, float16, bfloat16 or integer, read without a conversion pass) when
+all of these hold:
 
 - the extension is available: either built ahead of time as ``dct._C`` (``DCT_BUILD_CPU_EXT=1``
   at install time), or compiled on first use when ``DCT_CPU_JIT=1`` is set;
@@ -46,8 +47,8 @@ def compile_flags() -> tuple[list[str], list[str]]:
     if sys.platform == "win32":
         return ["/O2", "/arch:AVX2", "/fp:precise", "/openmp"], []
     if sys.platform == "darwin":
-        return ["-O3", "-mavx2", "-mfma"], []
-    return ["-O3", "-mavx2", "-mfma", "-fopenmp"], ["-fopenmp"]
+        return ["-O3", "-mavx2", "-mfma", "-mf16c"], []
+    return ["-O3", "-mavx2", "-mfma", "-mf16c", "-fopenmp"], ["-fopenmp"]
 
 
 def _jit_build():
@@ -98,10 +99,16 @@ def is_available() -> bool:
     return get() is not None
 
 
+# dtypes the kernel reads directly. It computes in float32; floating inputs keep their dtype and
+# integer inputs produce float32, as in dct.functional. Other integer dtypes (int64) are
+# converted to float32 first.
+DTYPES = frozenset({torch.float32, torch.float16, torch.bfloat16,
+                    torch.uint8, torch.int8, torch.int16, torch.int32})
+
+
 def supports(x: Tensor, dct: int | None, kernel_size: int) -> bool:
-    # x is already floating (integer inputs are converted to float32 before this check).
-    return (dct == 2 and kernel_size == 8 and x.device.type == "cpu"
-            and x.dtype == torch.float32 and x.layout == torch.strided and get() is not None)
+    return (dct == 2 and kernel_size == 8 and x.device.type == "cpu" and x.dtype in DTYPES
+            and x.layout == torch.strided and get() is not None)
 
 
 # Autograd. Both transforms are linear, and forward/inverse with the same 1D matrix are each
