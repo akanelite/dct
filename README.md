@@ -171,12 +171,4 @@ be dropped into any model as a fixed (non-learnable) transform layer.
 
 ## Changelog
 
-### 1.0.0
-
-Initial release.
-
-- `DCT2d` / `IDCT2d` modules and `dct2d` / `idct2d` functional API.
-- DCT types I–IV with `"ortho"`, `"backward"` and `"forward"` normalization (SciPy definitions).
-- Zigzag-ordered coefficients with uniform or per-channel `selections`.
-- Floating-point and integer (e.g. `uint8`) inputs; full `float32` precision on CUDA regardless of TF32.
-- PyTorch is the only runtime dependency.
+See [CHANGELOG.md](CHANGELOG.md).
