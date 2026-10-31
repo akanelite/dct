@@ -349,3 +349,15 @@ def test_per_channel_invalid_values_raise(sels):
         DCT2d(selections=sels)
     with pytest.raises(ValueError, match="selections"):
         dct2d(torch.randn(1, 2, 8, 8), selections=sels)
+
+
+@pytest.mark.parametrize("selections", [None, [32, 8, 8]])
+def test_quantized_tensor_input_is_dequantized(selections):
+    # torch.ao quantized tensors (e.g. after a QuantStub) are transformed as their float values.
+    x = torch.randn(1, 3, 16, 16)
+    xq = torch.quantize_per_tensor(x, 0.05, 128, torch.quint8)
+    y = dct2d(xq, selections=selections)
+    assert y.dtype == torch.float32
+    assert torch.equal(y, dct2d(xq.dequantize(), selections=selections))
+    yq = torch.quantize_per_tensor(y, 0.1, 0, torch.qint8)
+    assert torch.equal(idct2d(yq, selections=selections), idct2d(yq.dequantize(), selections=selections))

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dct"
-version = "1.0.0"
+version = "1.1.0"
 description = "Implementation of Discrete Cosine Transform (DCT) in PyTorch"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -36,3 +36,10 @@ dev = ["pytest", "numpy", "scipy"]
 [project.urls]
 homepage = "https://github.com/akanelite/dct"
 bug-tracker = "https://github.com/akanelite/dct/issues"
+
+[tool.setuptools.packages.find]
+include = ["dct*"]
+
+[tool.setuptools.package-data]
+# Shipped so that DCT_CPU_JIT=1 can compile the CPU kernel from an installed package.
+dct = ["csrc/*.cpp"]
