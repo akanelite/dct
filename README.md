@@ -2,6 +2,8 @@
 
 This library implements the [Discrete Cosine Transform](https://www.cse.iitd.ac.in/~pkalra/col783-2017/DCT-Paper.pdf) for PyTorch,
 performing fast block-wise 2D DCT on both CPU and GPU with nothing but PyTorch's own optimized operators.
+For the JPEG case (8x8 DCT-II, `float32`) an optional hand-written AVX2 CPU kernel is also available
+([see below](#optional-avx2-cpu-kernel)).
 
 While 2D DCT is typically implemented as two successive 1D DCTs, it is hard to achieve high performance without low-level optimizations or hardware acceleration.
 This implementation builds convolutional filters by unrolling a 2D basis derived from the Kronecker product of 1D bases,
@@ -95,6 +97,27 @@ automatically inside `forward`, so mixed-precision pipelines work out of the box
 default (which would otherwise cost ~1e-3 of accuracy): `DCT2d` disables TF32 for its own
 convolution call only, and `IDCT2d` uses a matmul, which only uses TF32 if you opt in via
 `torch.backends.cuda.matmul.allow_tf32`.
+
+### Optional AVX2 CPU kernel
+
+For `float32` (or integer) CPU tensors with `dct=2` and `kernel_size=8`, a hand-written AVX2 + FMA
+kernel replaces the PyTorch path when it is available. It processes 8 neighbouring blocks per SIMD
+vector with a butterfly 1D DCT and runs close to memory bandwidth: on an 8-thread AVX-512 machine,
+about 3x faster for the forward transform and 4–6x for the inverse at full `selections`. Every
+`norm`, `selections` (including per-channel lists), autograd (backward, double backward) and
+`torch.func` transforms (`vmap`, `grad`, `jvp`, `jacrev`, `hessian`) are supported. Other cases always use the PyTorch implementation, and results
+agree to `float32` rounding.
+
+The package stays pure Python by default. To build the kernel (a C++ compiler is needed — MSVC on
+Windows, GCC/Clang elsewhere), install with your torch already present:
+
+```bash
+DCT_BUILD_CPU_EXT=1 pip install --no-build-isolation .    # builds dct._C against the installed torch
+```
+
+The build is tied to that torch version, so reinstall after upgrading torch. Alternatively, set
+`DCT_CPU_JIT=1` to compile it on first use (needs `ninja`; cached by torch afterwards).
+The kernel is only used on CPUs with AVX2/FMA, and `DCT_DISABLE_CPU_EXT=1` turns it off.
 
 ### Integer (uint8) input
 
