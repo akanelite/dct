@@ -86,6 +86,10 @@ def _as_floating(x: Tensor, name: str) -> Tensor:
     # truncated to zeros.
     if x.is_floating_point():
         return x
+    if x.is_quantized:
+        # torch.ao quantized tensors (e.g. after a QuantStub): the DCT is a fixed transform,
+        # so it runs on the dequantized values and returns float32.
+        return x.dequantize()
     if x.dtype == torch.bool or x.is_complex():
         raise TypeError(f"{name} expects a real floating-point or integer tensor, got {x.dtype}")
     return x.to(torch.float32)

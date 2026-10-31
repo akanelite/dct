@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Build it with `DCT_BUILD_CPU_EXT=1 pip install --no-build-isolation .`, or compile it on first
   use with `DCT_CPU_JIT=1`; disable it with `DCT_DISABLE_CPU_EXT=1`. Without it, or for other
   cases, the pure-PyTorch implementation is used.
+- `torch.ao` quantized tensors are accepted as input (dequantized, computed in `float32`).
+- README section on ONNX export and INT8 quantization of models that use the transform.
+
+### Notes
+
+- Under `torch.onnx.export`, `torch.export`, `torch.compile` and `torch.jit.trace` the
+  PyTorch implementation is always used, so exported graphs contain only standard ops.
 
 ## [1.0.0] - 2026-10-31
 

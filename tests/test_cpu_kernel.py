@@ -273,3 +273,63 @@ def test_int64_is_converted_then_uses_kernel(calls):
     x = torch.randint(0, 256, (1, 3, 16, 16), dtype=torch.int64)
     assert torch.equal(dct2d(x), dct2d(x.float()))
     assert calls["forward"] == 2
+
+
+# ---- tracing / export: the kernel must step aside so graphs contain standard ops ----
+
+class _Net(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.dct = DCT2d(selections=[32, 8, 8])
+        self.idct = IDCT2d(selections=[32, 8, 8])
+
+    def forward(self, x):
+        return self.idct(self.dct(x))
+
+
+@pytest.mark.parametrize("strict", [True, False])
+def test_torch_export_uses_standard_ops(strict, calls):
+    # Non-strict export hands FakeTensors to the code; reaching the kernel used to crash.
+    x = torch.randint(0, 256, (2, 3, 16, 24), dtype=torch.uint8)
+    ep = torch.export.export(_Net(), (x,), strict=strict)
+    targets = {str(n.target) for n in ep.graph.nodes if n.op == "call_function"}
+    assert "aten.conv2d.default" in targets and not any("dct" in t for t in targets)
+    assert calls == {"forward": 0, "inverse": 0}
+    assert torch.allclose(ep.module()(x), _Net()(x), atol=1e-3)
+
+
+def test_compile_and_jit_trace_capture_the_graph():
+    x = torch.randn(1, 3, 16, 16)
+    ref = _Net()(x)                                   # lossy (selections), so compare to eager
+    out = torch.compile(_Net(), fullgraph=True, backend="aot_eager")(x)
+    assert torch.allclose(out, ref, atol=1e-4)
+    traced = torch.jit.trace(_Net(), (x,))
+    assert torch.allclose(traced(x), ref, atol=1e-4)
+
+
+@pytest.mark.parametrize("dynamo", [False, True])
+def test_onnx_export_runs_in_onnxruntime(dynamo):
+    pytest.importorskip("onnx")
+    ort = pytest.importorskip("onnxruntime")
+    if dynamo:
+        pytest.importorskip("onnxscript")
+    import io
+    x = torch.randint(0, 256, (2, 3, 16, 24), dtype=torch.uint8)
+    if dynamo:
+        model = torch.onnx.export(_Net(), (x,), dynamo=True).model_proto.SerializeToString()
+    else:
+        f = io.BytesIO()
+        torch.onnx.export(_Net(), (x,), f, dynamo=False, opset_version=17)
+        model = f.getvalue()
+    sess = ort.InferenceSession(model, providers=["CPUExecutionProvider"])
+    out = sess.run(None, {sess.get_inputs()[0].name: x.numpy()})[0]
+    assert abs(out - _Net()(x).numpy()).max() < 1e-3
+
+
+def test_kernel_rejects_fake_tensors_cleanly():
+    from torch._subclasses.fake_tensor import FakeTensorMode
+    m, _, perm = _cpu_matrices("ortho")
+    with FakeTensorMode(allow_non_fake_inputs=True) as mode:
+        x = mode.from_tensor(torch.randn(1, 3, 64, 64))
+        with pytest.raises(RuntimeError, match="FakeTensor"):
+            _cpu.get().forward(x, m, perm, _cpu_selections((64, 64, 64)))

@@ -337,6 +337,11 @@ bool supported_dtype(torch::ScalarType s) {
 void check(const torch::Tensor& t, const torch::Tensor& mat, const torch::Tensor& perm, const torch::Tensor& sels) {
     TORCH_CHECK(t.device().is_cpu() && t.dim() == 4 && supported_dtype(t.scalar_type()),
                 "expected a 4D CPU tensor of dtype float32, float16, bfloat16, uint8, int8, int16 or int32");
+    // FakeTensors (torch.export, torch.compile) and other Python tensor subclasses have no
+    // readable data: fail cleanly instead of dereferencing it from worker threads.
+    TORCH_CHECK(!t.key_set().has(c10::DispatchKey::Python) && t.has_storage() &&
+                (t.numel() == 0 || t.const_data_ptr() != nullptr),
+                "dct8_cpu: expected a plain tensor with data, not a FakeTensor or tensor subclass");
     TORCH_CHECK(mat.device().is_cpu() && mat.scalar_type() == torch::kFloat32 && mat.numel() == 64,
                 "mat must be an 8x8 float32 CPU tensor");
     TORCH_CHECK(perm.device().is_cpu() && perm.scalar_type() == torch::kInt64 && perm.numel() == 64

@@ -106,9 +106,20 @@ DTYPES = frozenset({torch.float32, torch.float16, torch.bfloat16,
                     torch.uint8, torch.int8, torch.int16, torch.int32})
 
 
+def _tracing() -> bool:
+    # torch.compile / torch.export (strict and non-strict), TorchScript and the ONNX exporters
+    # must see the PyTorch implementation: it is made of standard ops (Conv, MatMul,
+    # DepthToSpace, ...) that they can capture, whereas the kernel is opaque to them, and under
+    # non-strict export it would be handed FakeTensors that hold no data.
+    return (torch.compiler.is_compiling() or torch.jit.is_tracing() or torch.jit.is_scripting()
+            or torch.onnx.is_in_onnx_export())
+
+
 def supports(x: Tensor, dct: int | None, kernel_size: int) -> bool:
     return (dct == 2 and kernel_size == 8 and x.device.type == "cpu" and x.dtype in DTYPES
-            and x.layout == torch.strided and get() is not None)
+            and x.layout == torch.strided
+            and type(x) in (torch.Tensor, torch.nn.Parameter)   # no FakeTensor or other subclass
+            and not _tracing() and get() is not None)
 
 
 # Autograd. Both transforms are linear, and forward/inverse with the same 1D matrix are each
