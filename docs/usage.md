@@ -7,7 +7,6 @@
 - [Normalization](#normalization)
 - [GPU and precision](#gpu-and-precision)
 - [Gradients](#gradients)
-- [How it works](#how-it-works)
 
 ## Modules and functional interface
 
@@ -147,16 +146,3 @@ call only, and `IDCT2d` uses a matmul, which only uses TF32 if you opt in via
 Both transforms are fully differentiable, so gradients flow back to the input and they can be
 dropped into any model as a fixed (non-learnable) layer. `torch.func` transforms (`vmap`,
 `grad`, `jvp`, `jacrev`, `hessian`) work as well.
-
-## How it works
-
-While a 2D DCT is typically implemented as two successive 1D DCTs, that is hard to make fast
-without low-level optimizations or hardware acceleration. This implementation instead builds
-convolutional filters by unrolling a 2D basis derived from the Kronecker product of 1D bases.
-The forward transform therefore reduces to a single strided convolution, backed by the highly
-optimized backends that deep learning frameworks provide. The inverse is a per-block matrix
-multiply followed by a pixel shuffle, which is several times faster than a transposed
-convolution on CPU and for `float16` on GPU.
-
-For the 8x8 DCT-II on CPU, an optional hand-written kernel replaces this path; see
-[CPU kernel](cpu-kernel.md).

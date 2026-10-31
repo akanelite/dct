@@ -1,16 +1,14 @@
 # Discrete Cosine Transform
 
-Fast block-wise 2D [Discrete Cosine Transform](https://www.cse.iitd.ac.in/~pkalra/col783-2017/DCT-Paper.pdf)
-for PyTorch, on CPU and GPU.
+This library implements the [Discrete Cosine Transform](https://www.cse.iitd.ac.in/~pkalra/col783-2017/DCT-Paper.pdf) for PyTorch,
+performing fast block-wise 2D DCT on both CPU and GPU with nothing but PyTorch's own optimized operators.
+For the JPEG case (8x8 DCT-II) on CPU an optional hand-written AVX2 CPU kernel is also available
+([see docs/cpu-kernel.md](docs/cpu-kernel.md)).
 
-- The forward transform is a single strided convolution, and the inverse is a matmul plus a pixel
-  shuffle. Only PyTorch's own optimized operators are used.
-- DCT types I–IV with SciPy's `"ortho"` (default), `"backward"` and `"forward"` normalizations.
-- `selections` keep only the lowest-frequency coefficients, with an optional count per channel.
-- Takes `uint8` images and other integer inputs directly, and is fully differentiable
-  (`torch.func` included).
-- Exports to ONNX as standard ops.
-- An optional AVX2 CPU kernel for the JPEG case (8x8 DCT-II) is 3–6x faster than the PyTorch path (far more for `float16`).
+While 2D DCT is typically implemented as two successive 1D DCTs, it is hard to achieve high performance without low-level optimizations or hardware acceleration.
+This implementation builds convolutional filters by unrolling a 2D basis derived from the Kronecker product of 1D bases,
+so the forward transform reduces to a single strided convolution backed by the highly optimized backends available in deep learning frameworks.
+The inverse is a per-block matrix multiply followed by a pixel shuffle, which is several times faster than a transposed convolution on CPU and for `float16` on GPU.
 
 ## Installation
 
